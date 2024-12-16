@@ -1,11 +1,35 @@
-[tool.black]
+[tool.ruff]
+target-version = "py311"
 line-length = 127
-preview = true
 
-[tool.isort]
-profile = "black"
-line_length = 127
-known_third_party = ["bitcart"]
+[tool.ruff.lint]
+select = ["F", "E", "I", "UP", "YTT", "B", "T10", "C", "SIM", "RUF100"]
+mccabe = { max-complexity = 12 }
+
+[tool.ruff.lint.isort]
+known-third-party = ["bitcart"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.params.Depends",
+    "fastapi.Query",
+    "fastapi.params.Query",
+    "fastapi.Path",
+    "fastapi.params.Path",
+    "fastapi.Body",
+    "fastapi.params.Body",
+    "fastapi.Form",
+    "fastapi.params.Form",
+    "fastapi.Header",
+    "fastapi.params.Header",
+    "fastapi.File",
+    "fastapi.params.File",
+    "fastapi.Cookie",
+    "fastapi.params.Cookie",
+    "fastapi.Security",
+    "fastapi.params.Security",
+]
 
 [tool.pytest.ini_options]
 addopts = ["-n", "auto", "--cov=.", "--cov-report", "term-missing"]

@@ -10,7 +10,7 @@ import traceback
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import Annotated, Any, DefaultDict, Optional
+from typing import Annotated
 
 import fido2.features
 from aiohttp import ClientSession
@@ -18,15 +18,7 @@ from bitcart import COINS, APIManager
 from bitcart.coin import Coin
 from fastapi import HTTPException
 from pydantic import Field, ValidationInfo, field_validator
-from pydantic.fields import FieldInfo
-from pydantic_settings import (
-    BaseSettings,
-    DotEnvSettingsSource,
-    EnvSettingsSource,
-    PydanticBaseSettingsSource,
-    SecretsSettingsSource,
-    SettingsConfigDict,
-)
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from redis import asyncio as aioredis
 from starlette.config import Config
 from starlette.datastructures import CommaSeparatedStrings
@@ -46,27 +38,8 @@ from api.utils.files import ensure_exists
 fido2.features.webauthn_json_mapping.enabled = True
 
 
-class CustomDecodingMixin:
-    def decode_complex_value(self, field_name: str, field: FieldInfo, value: Any) -> Any:
-        if field_name == "enabled_cryptos":
-            return CommaSeparatedStrings(value)
-        return json.loads(value)
-
-
-class MyEnvSettingsSource(CustomDecodingMixin, EnvSettingsSource):
-    pass
-
-
-class MyDotEnvSettingsSource(CustomDecodingMixin, DotEnvSettingsSource):
-    pass
-
-
-class MySecretsSettingsSource(CustomDecodingMixin, SecretsSettingsSource):
-    pass
-
-
 class Settings(BaseSettings):
-    enabled_cryptos: CommaSeparatedStrings = Field("btc", validation_alias="BITCART_CRYPTOS")
+    enabled_cryptos: Annotated[CommaSeparatedStrings, NoDecode] = Field("btc", validation_alias="BITCART_CRYPTOS")
     redis_host: str = Field("redis://localhost", validation_alias="REDIS_HOST")
     test: bool = Field("pytest" in sys.modules, validation_alias="TEST")
     functional_tests: bool = Field(False, validation_alias="FUNCTIONAL_TESTS")
@@ -88,45 +61,29 @@ class Settings(BaseSettings):
     admin_rootpath: str = Field("/", validation_alias="BITCART_ADMIN_ROOTPATH")
     reverseproxy: str = Field("nginx-https", validation_alias="BITCART_REVERSEPROXY")
     https_enabled: bool = Field(False, validation_alias="BITCART_HTTPS_ENABLED")
-    log_file: Optional[str] = None
-    log_file_name: Optional[str] = Field(None, validation_alias="LOG_FILE")
-    log_file_regex: Optional[re.Pattern] = None
-    ssh_settings: Optional[SSHSettings] = None
-    update_url: Optional[str] = Field(None, validation_alias="UPDATE_URL")
-    torrc_file: Optional[str] = Field(None, validation_alias="TORRC_FILE")
-    openapi_path: Optional[str] = Field(None, validation_alias="OPENAPI_PATH")
+    log_file: str | None = None
+    log_file_name: str | None = Field(None, validation_alias="LOG_FILE")
+    log_file_regex: re.Pattern | None = None
+    ssh_settings: SSHSettings | None = None
+    update_url: str | None = Field(None, validation_alias="UPDATE_URL")
+    torrc_file: str | None = Field(None, validation_alias="TORRC_FILE")
+    openapi_path: str | None = Field(None, validation_alias="OPENAPI_PATH")
     api_title: str = Field("Bitcart", validation_alias="API_TITLE")
-    cryptos: Optional[dict[str, Coin]] = None
-    crypto_settings: Optional[dict] = None
-    manager: Optional[APIManager] = None
-    notifiers: Optional[dict] = None
-    redis_pool: Optional[aioredis.Redis] = None
-    config: Optional[Config] = None
-    logger: Optional[logging.Logger] = None
-    template_manager: Optional[TemplateManager] = None
-    exchange_rates: Optional[RatesManager] = None
-    locks: DefaultDict[str, Annotated[asyncio.Lock, Field(default_factory=asyncio.Lock)]] = defaultdict(asyncio.Lock)
-    plugins: Optional[list] = None
+    cryptos: dict[str, Coin] | None = None
+    crypto_settings: dict | None = None
+    manager: APIManager | None = None
+    notifiers: dict | None = None
+    redis_pool: aioredis.Redis | None = None
+    config: Config | None = None
+    logger: logging.Logger | None = None
+    template_manager: TemplateManager | None = None
+    exchange_rates: RatesManager | None = None
+    locks: defaultdict[str, Annotated[asyncio.Lock, Field(default_factory=asyncio.Lock)]] = defaultdict(asyncio.Lock)
+    plugins: list | None = None
     plugins_schema: dict = {}
     is_worker: bool = False
 
     model_config = SettingsConfigDict(env_file="conf/.env", extra="ignore")
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (
-            init_settings,
-            MyEnvSettingsSource(settings_cls, env_ignore_empty=True),
-            MyDotEnvSettingsSource(settings_cls),
-            MySecretsSettingsSource(settings_cls),
-        )
 
     @property
     def logserver_client_host(self) -> str:
@@ -349,9 +306,8 @@ class Settings(BaseSettings):
             if plugins_schema["$id"] == PLUGINS_SCHEMA_URL:
                 self.plugins_schema = plugins_schema
                 return
-        async with ClientSession() as session:
-            async with session.get(PLUGINS_SCHEMA_URL) as resp:
-                self.plugins_schema = await resp.json()
+        async with ClientSession() as session, session.get(PLUGINS_SCHEMA_URL) as resp:
+            self.plugins_schema = await resp.json()
         with open(schema_path, "w") as f:
             f.write(json.dumps(self.plugins_schema))
 
@@ -374,7 +330,7 @@ class Settings(BaseSettings):
 
     async def shutdown(self):
         if self.redis_pool:
-            await self.redis_pool.close()
+            await self.redis_pool.aclose()
         await self.shutdown_db_engine()
 
     def init_logging(self, worker=True):
@@ -385,7 +341,7 @@ class Settings(BaseSettings):
 
 def excepthook_handler(settings, excepthook):
     def internal_error_handler(type_, value, tb):
-        if type_ != KeyboardInterrupt:
+        if type_ is not KeyboardInterrupt:
             settings.logger.error("\n" + "".join(traceback.format_exception(type_, value, tb)))
         return excepthook(type_, value, tb)
 
@@ -393,10 +349,7 @@ def excepthook_handler(settings, excepthook):
 
 
 def handle_exception(settings, loop, context):
-    if "exception" in context:
-        msg = get_exception_message(context["exception"])
-    else:
-        msg = context["message"]
+    msg = get_exception_message(context["exception"]) if "exception" in context else context["message"]
     settings.logger.error(msg)
 
 
@@ -405,7 +358,7 @@ def log_startup_info():
     settings.logger.info(f"Bitcart version: {VERSION} - {WEBSITE} - {GIT_REPO_URL}")
     settings.logger.info(f"Python version: {sys.version}. On platform: {platform.platform()}")
     settings.logger.info(
-        f"BITCART_CRYPTOS={','.join([item for item in settings.enabled_cryptos])}; IN_DOCKER={settings.docker_env}; "
+        f"BITCART_CRYPTOS={','.join(list(settings.enabled_cryptos))}; IN_DOCKER={settings.docker_env}; "
         f"LOG_FILE={settings.log_file_name}"
     )
     settings.logger.info(f"Successfully loaded {len(settings.cryptos)} cryptos")

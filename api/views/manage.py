@@ -1,6 +1,6 @@
 import asyncio
+import contextlib
 import os
-from typing import Optional
 
 import aiofiles
 from bitcart.errors import BaseError as BitcartBaseError
@@ -48,10 +48,8 @@ async def cleanup_logs(user: models.User = Security(utils.authorization.auth_dep
         return {"status": "error", "message": "Log file unconfigured"}
     for f in os.listdir(settings.settings.log_dir):
         if utils.logging.log_filter(f):
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(os.path.join(settings.settings.log_dir, f))
-            except OSError:  # pragma: no cover
-                pass
     return {"status": "success", "message": "Successfully cleaned up logs!"}
 
 
@@ -74,7 +72,7 @@ async def get_daemons(user: models.User = Security(utils.authorization.auth_depe
 
 @router.get("/policies")
 async def get_policies(
-    user: Optional[models.User] = Security(utils.authorization.optional_auth_dependency, scopes=["server_management"]),
+    user: models.User | None = Security(utils.authorization.optional_auth_dependency, scopes=["server_management"]),
 ):
     data = await utils.policies.get_setting(schemes.Policy)
     exclude = set()
@@ -125,7 +123,7 @@ async def get_log_contents(
             contents = f.read().strip()
         return contents
     except OSError:
-        raise HTTPException(404, "This log doesn't exist")
+        raise HTTPException(404, "This log doesn't exist") from None
 
 
 @router.delete("/logs/{log}")
@@ -140,7 +138,7 @@ async def delete_log(
         os.remove(os.path.join(settings.settings.log_dir, log))
         return True
     except OSError:
-        raise HTTPException(404, "This log doesn't exist")
+        raise HTTPException(404, "This log doesn't exist") from None
 
 
 @router.get("/backups", response_model=schemes.BackupsPolicy)

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json as json_module
 import os
-import sys
 from collections import defaultdict
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -12,7 +11,9 @@ import pyotp
 import pytest
 from bitcart import BTC, LTC
 from bitcart.errors import BaseError as BitcartBaseError
+from httpx_ws import WebSocketDisconnect, aconnect_ws
 from parametrization import Parametrization
+from starlette.status import WS_1008_POLICY_VIOLATION
 
 from api import invoices, models, schemes, settings, utils
 from api.constants import BACKUP_FREQUENCIES, BACKUP_PROVIDERS, DOCKER_REPO_URL, SUPPORTED_CRYPTOS
@@ -32,20 +33,6 @@ class DummyInstance:
     coin_name = "BTC"
 
 
-def is_event_loop_running():
-    try:
-        asyncio.get_running_loop()
-        return True
-    except RuntimeError:
-        return False
-
-
-def get_future_return_value(return_val):
-    future = asyncio.Future()
-    future.set_result(return_val)
-    return future if sys.version_info < (3, 8) or is_event_loop_running() else return_val
-
-
 async def test_docs_root(client: TestClient):
     response = await client.get("/")
     assert response.status_code == 200
@@ -55,7 +42,7 @@ async def test_rate(client: TestClient):
     resp = await client.get("/cryptos/rate")
     data = resp.json()
     assert resp.status_code == 200
-    assert isinstance(data, (int, float))
+    assert isinstance(data, int | float)
     assert data > 0
     assert (await client.get("/cryptos/rate?fiat_currency=eur")).status_code == 200
     assert (await client.get("/cryptos/rate?fiat_currency=EUR")).status_code == 200
@@ -66,7 +53,7 @@ async def test_wallet_rate(client: TestClient, token: str, wallet):
     resp = await client.get(f"/wallets/{wallet['id']}/rate")
     data = resp.json()
     assert resp.status_code == 200
-    assert isinstance(data, (int, float))
+    assert isinstance(data, int | float)
     assert data > 0
     assert (await client.get(f"/wallets/{wallet['id']}/rate?currency=eur")).status_code == 200
     assert (await client.get(f"/wallets/{wallet['id']}/rate?currency=EUR")).status_code == 200
@@ -303,25 +290,25 @@ async def test_patch_token(client: TestClient, token):
 
 
 @Parametrization.autodetect_parameters()
-@Parametrization.case(name="non-user-unauthorized", user_exists=True, authorized=False)
+@Parametrization.case(name="non-user-unauthorized", user_exists=False, authorized=False)
 @Parametrization.case(name="non-user-authorized", user_exists=False, authorized=True)
 @Parametrization.case(name="user-unauthorized", user_exists=True, authorized=False)
 @Parametrization.case(name="user-authorized", user_exists=True, authorized=True)
 async def test_create_tokens(client: TestClient, user, token: str, user_exists: bool, authorized: bool):
     password = static_data.USER_PWD
-    email = user["email"] if user_exists else f"{user['email']}_NULL"
+    email = user["email"] if user_exists else f"NULL{user['email']}"
     resp = await client.post(
         "/token",
         json={"email": email, "password": password},
         headers={"Authorization": f"Bearer {token}"} if authorized else {},
     )
     if authorized:
-        if user_exists:
-            resp.status_code == 200
-        else:
-            resp.status_code == 404
+        assert resp.status_code == 200
     else:
-        resp.status_code == 401
+        if user_exists:
+            assert resp.status_code == 200
+        else:
+            assert resp.status_code == 401
 
 
 async def test_token_permissions_control(client: TestClient, token: str, limited_user, limited_token: str):
@@ -372,23 +359,23 @@ async def test_token_permissions_control(client: TestClient, token: str, limited
 
 
 @Parametrization.autodetect_parameters()
-@Parametrization.case(name="non-token-unauthorized", token_exists=True, authorized=False)
+@Parametrization.case(name="non-token-unauthorized", token_exists=False, authorized=False)
 @Parametrization.case(name="non-token-authorized", token_exists=False, authorized=True)
 @Parametrization.case(name="token-unauthorized", token_exists=True, authorized=False)
 @Parametrization.case(name="token-authorized", token_exists=True, authorized=True)
 async def test_delete_token(client: TestClient, token: str, token_exists: bool, authorized: bool):
-    token = token if token_exists else 1
+    fetch_token = token if token_exists else 1
     resp = await client.delete(
-        f"/token/{token}",
+        f"/token/{fetch_token}",
         headers={"Authorization": f"Bearer {token}"} if authorized else {},
     )
     if authorized:
         if token_exists:
-            resp.status_code == 200
+            assert resp.status_code == 200
         else:
-            resp.status_code == 404
+            assert resp.status_code == 404
     else:
-        resp.status_code == 401
+        assert resp.status_code == 401
 
 
 async def test_management_commands(client: TestClient, log_file: str, token: str, limited_token: str):
@@ -735,41 +722,42 @@ async def test_batch_commands(client: TestClient, token: str, store):
     ] == "complete"
 
 
-async def test_wallet_ws(ws_client, token: str):
-    r = await ws_client.post(
+async def test_wallet_ws(client, token: str):
+    r = await client.post(
         "/wallets",
         json={"name": "testws1", "xpub": static_data.TEST_XPUB},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 200
     wallet_id = r.json()["id"]
-    async with ws_client.websocket_connect(f"/ws/wallets/{wallet_id}?token={token}") as websocket:
+    async with aconnect_ws(f"/ws/wallets/{wallet_id}?token={token}", client) as websocket:
         await asyncio.sleep(1)
         await utils.redis.publish_message(
             f"wallet:{wallet_id}",
             {"status": "success", "balance": str((await BTC(xpub=static_data.TEST_XPUB).balance())["confirmed"])},
         )
         await check_ws_response2(websocket)
-    with pytest.raises(Exception):
-        async with ws_client.websocket_connect(f"/ws/wallets/{wallet_id}") as websocket:
+    with pytest.raises(WebSocketDisconnect) as exc:
+        async with aconnect_ws(f"/ws/wallets/{wallet_id}", client) as websocket:
             await check_ws_response2(websocket)
-    with pytest.raises(Exception):
-        async with ws_client.websocket_connect(f"/ws/wallets/{wallet_id}?token=x") as websocket:
+    assert exc.value.code == WS_1008_POLICY_VIOLATION
+    with pytest.raises(WebSocketDisconnect) as exc:
+        async with aconnect_ws(f"/ws/wallets/{wallet_id}?token=x", client) as websocket:
             await check_ws_response2(websocket)
-    with pytest.raises(Exception):
-        async with ws_client.websocket_connect(f"/ws/wallets/555?token={token}") as websocket:
+    assert exc.value.code == WS_1008_POLICY_VIOLATION
+    with pytest.raises(WebSocketDisconnect) as exc:
+        async with aconnect_ws(f"/ws/wallets/555?token={token}", client) as websocket:
             await check_ws_response2(websocket)
+    assert exc.value.code == WS_1008_POLICY_VIOLATION
 
 
-async def test_invoice_ws(ws_client, token: str, store):
+async def test_invoice_ws(client, token: str, store):
     store_id = store["id"]
-    r = await ws_client.post(
-        "/invoices", json={"store_id": store_id, "price": 5}, headers={"Authorization": f"Bearer {token}"}
-    )
+    r = await client.post("/invoices", json={"store_id": store_id, "price": 5}, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     data = r.json()
     invoice_id = data["id"]
-    async with ws_client.websocket_connect(f"/ws/invoices/{invoice_id}") as websocket:
+    async with aconnect_ws(f"/ws/invoices/{invoice_id}", client) as websocket:
         await asyncio.sleep(1)
         await invoices.new_payment_handler(
             DummyInstance(),
@@ -781,16 +769,18 @@ async def test_invoice_ws(ws_client, token: str, store):
             data["payments"][0]["amount"],
         )  # emulate paid invoice
         await check_ws_response(websocket, data["payments"][0]["amount"])
-        async with ws_client.websocket_connect(
-            f"/ws/invoices/{invoice_id}"
-        ) as websocket2:  # test if after invoice was completed websocket returns immediately
-            await check_ws_response_complete(websocket2, data["payments"][0]["amount"])
-    with pytest.raises(Exception):
-        async with ws_client.websocket_connect("/ws/invoices/555") as websocket:
+    async with aconnect_ws(
+        f"/ws/invoices/{invoice_id}", client
+    ) as websocket2:  # test if after invoice was completed websocket returns immediately
+        await check_ws_response_complete(websocket2, data["payments"][0]["amount"])
+    with pytest.raises(WebSocketDisconnect) as exc:
+        async with aconnect_ws("/ws/invoices/555", client) as websocket:
             await check_ws_response(websocket, 0)
-    with pytest.raises(Exception):
-        async with ws_client.websocket_connect("/ws/invoices/invalid_id") as websocket:
+    assert exc.value.code == WS_1008_POLICY_VIOLATION
+    with pytest.raises(WebSocketDisconnect) as exc:
+        async with aconnect_ws("/ws/invoices/invalid_id", client) as websocket:
             await check_ws_response(websocket, 0)
+    assert exc.value.code == WS_1008_POLICY_VIOLATION
 
 
 @pytest.mark.parametrize("currencies", ["", "DUMMY", "btc"])
@@ -1403,7 +1393,7 @@ async def test_products_pagination_deleted_store(client: TestClient, token, stor
 
 
 @pytest.mark.parametrize(
-    "name,expected,updated",
+    ("name", "expected", "updated"),
     [
         ("buyer_email", "test@example.com", "test2@example.com"),
         ("shipping_address", "test", "test2"),
@@ -1469,9 +1459,7 @@ async def test_syncinfo(client: TestClient, token, mocker):
 
 async def test_create_invoice_randomize_wallets(client: TestClient, token, user):
     wallets = [await create_wallet(client, user["id"], token, xpub=xpub) for xpub in static_data.RANDOMIZE_TEST_XPUBS]
-    store = await create_store(
-        client, user["id"], token, custom_store_attrs={"wallets": list(map(lambda x: x["id"], wallets))}
-    )
+    store = await create_store(client, user["id"], token, custom_store_attrs={"wallets": [x["id"] for x in wallets]})
     invoice = await create_invoice(client, user["id"], token, store_id=store["id"])
     payments = invoice["payments"]
     idx = 1

@@ -1,5 +1,4 @@
 import json
-from typing import Optional
 
 import pyotp
 from fastapi import APIRouter, HTTPException, Query, Request, Security
@@ -74,7 +73,7 @@ async def finalize_password_reset(code: str, data: schemes.ResetPasswordFinalize
 @router.post("/verify")
 async def send_verification_email(
     data: schemes.VerifyEmailData,
-    auth_user: Optional[models.User] = Security(utils.authorization.optional_auth_dependency, scopes=["token_management"]),
+    auth_user: models.User | None = Security(utils.authorization.optional_auth_dependency, scopes=["token_management"]),
 ):
     if not auth_user:
         await utils.authorization.captcha_flow(data.captcha_code)
@@ -110,7 +109,7 @@ async def finalize_email_verification(code: str, add_token: bool = Query(False))
 
 async def create_user(
     model: schemes.CreateUser,
-    auth_user: Optional[models.User] = Security(utils.authorization.optional_auth_dependency, scopes=[]),
+    auth_user: models.User | None = Security(utils.authorization.optional_auth_dependency, scopes=[]),
 ):
     user = await crud.users.create_user(model, auth_user)
     await events.event_handler.publish("send_verification_email", {"id": user.id})
@@ -162,7 +161,7 @@ async def register_fido2(
     auth_data: schemes.LoginFIDOData,
     user: models.User = Security(utils.authorization.auth_dependency, scopes=["token_management"]),
 ):  # pragma: no cover
-    existing_credentials = list(map(lambda x: AttestedCredentialData(bytes.fromhex(x["device_data"])), user.fido2_devices))
+    existing_credentials = [AttestedCredentialData(bytes.fromhex(x["device_data"])) for x in user.fido2_devices]
     options, state = Fido2Server(PublicKeyCredentialRpEntity(name="Bitcart", id=auth_data.auth_host)).register_begin(
         PublicKeyCredentialUserEntity(
             id=user.id.encode(),
@@ -193,7 +192,7 @@ async def fido2_complete_registration(
     try:
         auth_data = Fido2Server(PublicKeyCredentialRpEntity(name="Bitcart", id=auth_host)).register_complete(state, data)
     except Exception as e:
-        raise HTTPException(422, str(e))
+        raise HTTPException(422, str(e)) from None
     async with utils.redis.wait_for_redis():
         await settings.settings.redis_pool.delete(f"{FIDO2_REGISTER_KEY}:{user.id}")
     user.fido2_devices.append(

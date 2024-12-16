@@ -15,9 +15,8 @@ from decimal import Decimal
 from base import BaseDaemon
 from storage import ConfigDB as StorageConfigDB
 from storage import JSONEncoder as StorageJSONEncoder
-from storage import Storage, StoredDBProperty, StoredObject, StoredProperty
+from storage import Storage, StoredDBProperty, StoredObject, StoredProperty, decimal_to_string
 from storage import WalletDB as StorageWalletDB
-from storage import decimal_to_string
 from utils import CastingDataclass, JsonResponse, get_exception_message, get_function_header, hide_logging_errors, rpc
 
 NO_HISTORY_MESSAGE = "We don't access transaction history to remain lightweight"
@@ -148,9 +147,7 @@ class WalletDB(StorageWalletDB):
         return v
 
     def _should_convert_to_stored_dict(self, key) -> bool:
-        if key == "keystore":
-            return False
-        return True
+        return key != "keystore"
 
     def run_upgrades(self):
         self._convert_version_2()
@@ -276,10 +273,9 @@ class Invoice(CastingDataclass, StoredObject):
     @property
     def status_str(self):
         status_str = pr_tooltips[self.status]
-        if self.status == PR_UNPAID:
-            if self.exp > 0:
-                expiration = self.exp + self.time
-                status_str = "Expires at " + time.ctime(expiration)
+        if self.status == PR_UNPAID and self.exp > 0:
+            expiration = self.exp + self.time
+            status_str = "Expires at " + time.ctime(expiration)
         return status_str
 
 
@@ -432,10 +428,8 @@ class Wallet:
         return d
 
     def get_request(self, key):
-        try:
-            key = self.request_addresses.get(key, key)
-        finally:
-            return self.receive_requests.get(key)
+        key = self.request_addresses.get(key, key)
+        return self.receive_requests.get(key)
 
     def remove_from_detection_dict(self, req):
         self.request_addresses.pop(req.payment_address, None)
@@ -450,7 +444,7 @@ class Wallet:
         return True
 
     def get_sorted_requests(self):
-        out = [self.get_request(x) for x in self.receive_requests.keys()]
+        out = [self.get_request(x) for x in self.receive_requests]
         out = [x for x in out if x is not None]
         out.sort(key=lambda x: x.time)
         return out
@@ -470,7 +464,7 @@ class Wallet:
         for kwarg in kwargs:
             setattr(req, kwarg, kwargs[kwarg])
         self.add_payment_request(req, save_db=False)
-        if status == PR_PAID or status == PR_EXPIRED:
+        if status in (PR_PAID, PR_EXPIRED):
             self.remove_from_detection_dict(req)
         self.save_db()
         return req
@@ -610,7 +604,7 @@ class BlockProcessorDaemon(BaseDaemon, metaclass=ABCMeta):
             if self.TX_SPEED not in self.SPEED_MULTIPLIERS:
                 raise ValueError(
                     f"Invalid TX_SPEED: {self.TX_SPEED}. Valid values: {', '.join(self.SPEED_MULTIPLIERS.keys())}"
-                )
+                ) from None
             self.SPEED_MULTIPLIER = self.SPEED_MULTIPLIERS[self.TX_SPEED]
         self.NO_DOWNTIME_PROCESSING = self.env("NO_DOWNTIME_PROCESSING", cast=bool, default=False)
 
@@ -754,13 +748,15 @@ class BlockProcessorDaemon(BaseDaemon, metaclass=ABCMeta):
         return path
 
     @abstractmethod
-    async def load_wallet(self, xpub, contract, diskless=False, extra_params={}):
+    async def load_wallet(self, xpub, contract, diskless=False, extra_params=None):
         pass
 
     async def is_still_syncing(self, wallet=None):
         return wallet and not wallet.is_synchronized()
 
-    async def _get_wallet(self, id, req_method, xpub, contract, diskless=False, extra_params={}):
+    async def _get_wallet(self, id, req_method, xpub, contract, diskless=False, extra_params=None):
+        if extra_params is None:
+            extra_params = {}
         wallet = error = None
         try:
             should_skip = req_method not in self.supported_methods or not self.supported_methods[req_method].requires_network

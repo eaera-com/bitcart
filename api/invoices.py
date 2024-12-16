@@ -58,9 +58,7 @@ FAILED_STATUSES = [InvoiceStatus.EXPIRED, InvoiceStatus.INVALID]
 
 
 def convert_status(status):
-    if isinstance(status, int):
-        status = STATUS_MAPPING[status]
-    elif isinstance(status, str) and status in STATUS_MAPPING:
+    if status in STATUS_MAPPING and (isinstance(status, int | str)):
         status = STATUS_MAPPING[status]
     if not status:
         status = InvoiceStatus.EXPIRED
@@ -138,8 +136,10 @@ async def process_electrum_status(invoice, method, wallet, electrum_status, tx_h
 
 
 async def new_payment_handler(
-    instance, event, address, status, status_str, tx_hashes=[], sent_amount=Decimal(0), contract=None
+    instance, event, address, status, status_str, tx_hashes=None, sent_amount=Decimal(0), contract=None
 ):
+    if tx_hashes is None:
+        tx_hashes = []
     with log_errors():
         sent_amount = Decimal(sent_amount)
         query = get_pending_invoices_query(instance.coin_name.lower()).where(models.PaymentMethod.lookup_field == address)
@@ -154,7 +154,9 @@ async def new_payment_handler(
         await process_electrum_status(invoice, method, wallet, status, tx_hashes, sent_amount)
 
 
-async def update_confirmations(invoice, method, confirmations, tx_hashes=[], sent_amount=Decimal(0)):
+async def update_confirmations(invoice, method, confirmations, tx_hashes=None, sent_amount=Decimal(0)):
+    if tx_hashes is None:
+        tx_hashes = []
     await method.update(confirmations=confirmations).apply()
     store = await utils.database.get_object(models.Store, invoice.store_id)
     status = invoice.status
@@ -263,23 +265,32 @@ async def update_stock_levels(invoice):
         for product_quantity, product_id, quantity in quantities:
             if product_quantity == -1:  # unlimited quantity
                 continue
-            await models.Product.update.values(quantity=max(0, product_quantity - quantity)).where(
-                models.Product.id == product_id
-            ).gino.status()
+            await (
+                models.Product.update.values(quantity=max(0, product_quantity - quantity))
+                .where(models.Product.id == product_id)
+                .gino.status()
+            )
 
 
-async def update_status(invoice, status, method=None, tx_hashes=[], sent_amount=Decimal(0), set_exception_status=None):
-    if status == InvoiceStatus.PENDING and invoice.status == InvoiceStatus.PENDING and method and sent_amount > 0:
-        if not invoice.payment_id or invoice.payment_id == method.id:
-            await invoice.update(
-                paid_currency=method.get_name(),
-                payment_id=method.id,
-                discount=method.discount,
-                tx_hashes=tx_hashes,
-                sent_amount=sent_amount,
-                exception_status=InvoiceExceptionStatus.PAID_PARTIAL,
-            ).apply()
-            await process_notifications(invoice)
+async def update_status(invoice, status, method=None, tx_hashes=None, sent_amount=Decimal(0), set_exception_status=None):
+    if tx_hashes is None:
+        tx_hashes = []
+    if (
+        status == InvoiceStatus.PENDING
+        and invoice.status == InvoiceStatus.PENDING
+        and method
+        and sent_amount > 0
+        and (not invoice.payment_id or invoice.payment_id == method.id)
+    ):
+        await invoice.update(
+            paid_currency=method.get_name(),
+            payment_id=method.id,
+            discount=method.discount,
+            tx_hashes=tx_hashes,
+            sent_amount=sent_amount,
+            exception_status=InvoiceExceptionStatus.PAID_PARTIAL,
+        ).apply()
+        await process_notifications(invoice)
 
     if (
         invoice.status != status
@@ -299,14 +310,14 @@ async def update_status(invoice, status, method=None, tx_hashes=[], sent_amount=
                     if sent_amount == method.amount or method.lightning
                     else InvoiceExceptionStatus.PAID_OVER
                 )
-                kwargs = dict(
-                    paid_currency=full_method_name,
-                    payment_id=method.id,
-                    discount=method.discount,
-                    tx_hashes=tx_hashes,
-                    sent_amount=sent_amount,
-                    exception_status=exception_status,
-                )
+                kwargs = {
+                    "paid_currency": full_method_name,
+                    "payment_id": method.id,
+                    "discount": method.discount,
+                    "tx_hashes": tx_hashes,
+                    "sent_amount": sent_amount,
+                    "exception_status": exception_status,
+                }
                 if not invoice.paid_date:
                     kwargs["paid_date"] = utils.time.now()
                 await invoice.update(**kwargs).apply()

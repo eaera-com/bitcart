@@ -11,12 +11,23 @@ from datetime import datetime
 from decimal import Decimal
 
 from aiohttp import ClientError as AsyncClientError
-from genericprocessor import NOOP_PATH, PR_PAID, PR_UNCONFIRMED, PR_UNPAID, BlockchainFeatures, BlockProcessorDaemon
+from genericprocessor import (
+    NOOP_PATH,
+    PR_PAID,
+    PR_UNCONFIRMED,
+    PR_UNPAID,
+    BlockchainFeatures,
+    BlockProcessorDaemon,
+    WalletDB,
+    daemon_ctx,
+    decimal_to_string,
+    from_wei,
+    str_to_bool,
+)
 from genericprocessor import Invoice as BaseInvoice
 from genericprocessor import KeyStore as BaseKeyStore
 from genericprocessor import Transaction as BaseTransaction
 from genericprocessor import Wallet as BaseWallet
-from genericprocessor import WalletDB, daemon_ctx, decimal_to_string, from_wei, str_to_bool
 from jsonrpc import RPCProvider
 from monero import const as monero_const
 from monero import ed25519
@@ -66,7 +77,7 @@ class MoneroRPC(RPCProvider):
 
     @staticmethod
     def _validate_hashes(hashes):
-        if any(map(lambda h: not is_valid_hash(h), hashes)):
+        if any(not is_valid_hash(h) for h in hashes):
             raise Exception("Invalid tx hash")
 
     async def get_transactions(self, hashes):
@@ -95,7 +106,7 @@ class MoneroRPC(RPCProvider):
                     fee=from_atomic(fee) if fee else None,
                     height=None if tx["in_pool"] else tx["block_height"],
                     timestamp=datetime.fromtimestamp(tx["block_timestamp"]) if "block_timestamp" in tx else None,
-                    output_indices=tx["output_indices"] if "output_indices" in tx else None,
+                    output_indices=tx.get("output_indices", None),
                     blob=binascii.unhexlify(tx["as_hex"]) or None,
                     json=as_json,
                 )
@@ -259,8 +270,8 @@ class KeyStore(BaseKeyStore):
             private_key = seed.secret_spend_key()
             public_key = seed.secret_view_key()
             address = str(seed.public_address(net=daemon_ctx.get().network_const))
-        except Exception:
-            raise Exception("Invalid seed provided")
+        except Exception as e:
+            raise Exception("Invalid seed provided") from e
         if check_address and address != self.address:
             raise Exception("Invalid seed imported: address mismatch")
         self.seed = privkey
@@ -409,7 +420,9 @@ class XMRDaemon(BlockProcessorDaemon):
     def get_default_server_url(self):
         return ""
 
-    async def load_wallet(self, xpub, contract, diskless=False, extra_params={}):
+    async def load_wallet(self, xpub, contract, diskless=False, extra_params=None):
+        if extra_params is None:
+            extra_params = {}
         address = extra_params.get("address", None)
         wallet_key = self.coin.get_wallet_key(xpub, **extra_params)
         if wallet_key in self.wallets:
@@ -449,7 +462,7 @@ class XMRDaemon(BlockProcessorDaemon):
             payment_id[i] ^= shared_secret[i]
         return address_func(address).with_payment_id(binascii.hexlify(payment_id).decode())
 
-    async def process_transaction(self, tx, unconfirmed=False):  # noqa: C901
+    async def process_transaction(self, tx, unconfirmed=False):
         if tx.divisibility is None:
             tx.divisibility = self.DIVISIBILITY
         current_height = await self.coin.get_block_number()

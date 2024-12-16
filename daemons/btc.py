@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import contextlib
 import functools
 import inspect
 import os
@@ -8,7 +9,6 @@ import traceback
 from collections import deque
 from decimal import Decimal
 from types import ModuleType
-from typing import Union
 from urllib.parse import urlparse
 
 from base import BaseDaemon
@@ -192,10 +192,8 @@ class BTCDaemon(BaseDaemon):
 
     def init_wallet(self, wallet):
         if self.LIGHTNING:
-            try:
+            with contextlib.suppress(AssertionError):
                 wallet.init_lightning(password=None)
-            except AssertionError:
-                pass
         wallet.start_network(self.network)
 
     def copy_config_settings(self, config):
@@ -515,7 +513,7 @@ class BTCDaemon(BaseDaemon):
         return self.electrum.transaction.Transaction(raw_tx).txid()
 
     @rpc
-    def get_default_fee(self, tx: Union[str, int], wallet=None) -> float:
+    def get_default_fee(self, tx: str | int, wallet=None) -> float:
         return format_satoshis(self.electrum_config.estimate_fee(self.get_tx_size(tx) if isinstance(tx, str) else tx))
 
     @rpc

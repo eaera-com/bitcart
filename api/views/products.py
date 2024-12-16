@@ -1,7 +1,6 @@
 import json
 import os
 from decimal import Decimal
-from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Security, UploadFile
 from pydantic import ValidationError
@@ -33,11 +32,11 @@ def parse_data(data, scheme):
     try:
         data = json.loads(data)
     except json.JSONDecodeError:
-        raise HTTPException(422, "Invalid JSON")
+        raise HTTPException(422, "Invalid JSON") from None
     try:
         data = scheme(**data)
     except ValidationError as e:
-        raise HTTPException(422, e.errors())
+        raise HTTPException(422, e.errors()) from None
     return data
 
 
@@ -55,7 +54,7 @@ async def create_product(
     return obj
 
 
-async def get_product_noauth(model_id: str, store: Optional[str] = None):
+async def get_product_noauth(model_id: str, store: str | None = None):
     query = models.Product.query.where(models.Product.id == model_id)
     if store is not None:
         query = query.where(models.Product.store_id == store)
@@ -92,12 +91,12 @@ async def delete_product(item: schemes.DisplayProduct, user: schemes.User) -> sc
 async def get_products(
     request: Request,
     pagination: pagination.Pagination = Depends(),
-    store: Optional[str] = None,
-    category: Optional[str] = "",
-    min_price: Optional[Decimal] = None,
-    max_price: Optional[Decimal] = None,
-    sale: Optional[bool] = False,
-    user: Optional[models.User] = Security(utils.authorization.optional_auth_dependency, scopes=["product_management"]),
+    store: str | None = None,
+    category: str | None = "",
+    min_price: Decimal | None = None,
+    max_price: Decimal | None = None,
+    sale: bool | None = False,
+    user: models.User | None = Security(utils.authorization.optional_auth_dependency, scopes=["product_management"]),
 ):
     if not user and store is None:
         raise HTTPException(401, "Unauthorized")
@@ -117,12 +116,12 @@ async def get_max_product_price(store: str):
 async def products_count(
     request: Request,
     pagination: pagination.Pagination = Depends(),
-    store: Optional[str] = None,
-    category: Optional[str] = "",
-    min_price: Optional[Decimal] = None,
-    max_price: Optional[Decimal] = None,
-    sale: Optional[bool] = False,
-    user: Optional[models.User] = Security(utils.authorization.optional_auth_dependency, scopes=["product_management"]),
+    store: str | None = None,
+    category: str | None = "",
+    min_price: Decimal | None = None,
+    max_price: Decimal | None = None,
+    sale: bool | None = False,
+    user: models.User | None = Security(utils.authorization.optional_auth_dependency, scopes=["product_management"]),
 ):
     if store is None and not user:
         raise HTTPException(401, "Unauthorized")
@@ -135,7 +134,7 @@ async def products_count(
 async def categories(store: str):
     dataset = {
         category
-        for category, in await models.Product.select("category").where(models.Product.store_id == store).gino.all()
+        for (category,) in await models.Product.select("category").where(models.Product.store_id == store).gino.all()
         if category
     }
     dataset.discard("all")

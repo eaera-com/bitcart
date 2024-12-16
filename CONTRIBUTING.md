@@ -115,7 +115,7 @@ Manage any merge conflicts, commit them, and then commit them to your fork.
 You'll need the following tools to develop Bitcart locally:
 
 - [Git](https://git-scm.com)
-- [Python](https://www.python.org/downloads) at least version 3.9 (version 2 is **_not_** supported)
+- [Python](https://www.python.org/downloads) at least version 3.11 (version 2 is **_not_** supported)
 - [Pip](https://pip.readthedocs.io/en/stable/installing/), with setuptools and wheel installed
 - [VirtualEnv](https://virtualenv.pypa.io/en/latest/installation/), not required, but recommended for development
 
@@ -204,7 +204,7 @@ python3 worker.py
 
 ### Updating dependencies
 
-If you need to update some dependency, use `pip-compile` from `pip-tools` (included in dev requirements file).
+If you need to update some dependency, use `uv pip compile` (included in dev requirements file).
 
 You can use `scripts/compile-requirements.sh` to re-compile requirements files from input files, and
 `scripts/sync-requirements.sh` to install every requirement file.

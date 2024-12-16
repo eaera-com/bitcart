@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import os
 import traceback
@@ -13,11 +14,19 @@ from aiolimiter import AsyncLimiter
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from eth_keys.datatypes import PrivateKey, PublicKey
-from genericprocessor import NOOP_PATH, BlockchainFeatures, BlockProcessorDaemon
+from genericprocessor import (
+    NOOP_PATH,
+    BlockchainFeatures,
+    BlockProcessorDaemon,
+    Transaction,
+    WalletDB,
+    daemon_ctx,
+    from_wei,
+    str_to_bool,
+    to_wei,
+)
 from genericprocessor import KeyStore as BaseKeyStore
-from genericprocessor import Transaction
 from genericprocessor import Wallet as BaseWallet
-from genericprocessor import WalletDB, daemon_ctx, from_wei, str_to_bool, to_wei
 from hexbytes import HexBytes
 from mnemonic import Mnemonic
 from storage import JSONEncoder as StorageJSONEncoder
@@ -35,9 +44,8 @@ from web3 import AsyncWeb3
 from web3._utils.rpc_abi import RPC as ETHRPC
 from web3.contract import AsyncContract
 from web3.datastructures import AttributeDict
-from web3.exceptions import ABIFunctionNotFound, BlockNotFound, TransactionNotFound
+from web3.exceptions import ABIFunctionNotFound, BlockNotFound, TransactionNotFound, Web3Exception
 from web3.exceptions import ValidationError as Web3ValidationError
-from web3.exceptions import Web3Exception
 from web3.middleware import async_simple_cache_middleware
 from web3.middleware.geth_poa import async_geth_poa_middleware
 from web3.providers.rpc import get_default_http_endpoint
@@ -58,7 +66,7 @@ RPC_SOURCE = "Infura"
 class JSONEncoder(StorageJSONEncoder):
     def default(self, obj):
         if isinstance(obj, AttributeDict):
-            return {k: v for k, v in obj.items()}
+            return dict(obj.items())
         if isinstance(obj, HexBytes):
             return str(obj.hex())
         return super().default(obj)
@@ -74,7 +82,6 @@ class MultipleRPCEthereumProvider(AsyncWeb3.AsyncHTTPProvider):
 
 
 class EthereumRPCProvider(AbstractRPCProvider, AsyncWeb3.AsyncHTTPProvider):
-
     web3: AsyncWeb3 = None  # patched later when it's created
     cooked_func = None
 
@@ -239,8 +246,8 @@ class KeyStore(BaseKeyStore):
             return
         try:
             self.contract = daemon_ctx.get().coin.normalize_address(self.contract)
-        except Exception:
-            raise Exception("Error loading wallet: invalid address")
+        except Exception as e:
+            raise Exception("Error loading wallet: invalid address") from e
 
     def __post_init__(self):
         self.load_contract()
@@ -260,7 +267,7 @@ class KeyStore(BaseKeyStore):
                     self.address = self.public_key.to_checksum_address()
                 except Exception:
                     if not daemon_ctx.get().coin.is_address(self.key):
-                        raise Exception("Error loading wallet: invalid address")
+                        raise Exception("Error loading wallet: invalid address") from None
                     self.address = daemon_ctx.get().coin.normalize_address(self.key)
         if self.account:
             self.address = self.account.address
@@ -272,8 +279,8 @@ class KeyStore(BaseKeyStore):
     def add_privkey(self, privkey):
         try:
             account = Account.from_key(privkey)
-        except Exception:
-            raise Exception("Invalid key provided")
+        except Exception as e:
+            raise Exception("Invalid key provided") from e
         if account.address != self.address:
             raise Exception("Invalid private key imported: address mismatch")
         self.private_key = privkey
@@ -392,26 +399,22 @@ class ETHDaemon(BlockProcessorDaemon):
                 debug_data = None
                 for _ in range(5):
                     async with self.archive_limiter:
-                        try:
+                        with contextlib.suppress(Exception):
                             debug_data = await self.archive_coin.debug_trace_block(block_number)
-                        except Exception:
-                            pass
                     if debug_data:
                         break
                     await asyncio.sleep(5)
                 if not debug_data:
                     raise Exception(f"Error getting debug trace for {block_number}")
-                txes = list(
-                    map(
-                        lambda x: Transaction(
-                            x[0],
-                            x[1],
-                            x[2],
-                            x[3],
-                        ),
-                        self.coin.find_all_trace_outputs(debug_data),
+                txes = [
+                    Transaction(
+                        x[0],
+                        x[1],
+                        x[2],
+                        x[3],
                     )
-                )
+                    for x in self.coin.find_all_trace_outputs(debug_data)
+                ]
                 [asyncio.ensure_future(self.process_transaction(tx)) for tx in txes]
             except Exception:
                 if self.VERBOSE:
@@ -538,7 +541,9 @@ class ETHDaemon(BlockProcessorDaemon):
     def process_extra_params(self, wallet, extra_params):
         pass
 
-    async def load_wallet(self, xpub, contract, diskless=False, extra_params={}):
+    async def load_wallet(self, xpub, contract, diskless=False, extra_params=None):
+        if extra_params is None:
+            extra_params = {}
         wallet_key = self.coin.get_wallet_key(xpub, contract, **extra_params)
         if wallet_key in self.wallets:
             await self.add_contract(contract, wallet_key)
@@ -668,9 +673,9 @@ class ETHDaemon(BlockProcessorDaemon):
             **(
                 await self.get_common_payto_params(
                     address,
-                    nonce=kwargs.get("nonce", None),
-                    gas_price=kwargs.get("gas_price", None),
-                    multiplier=kwargs.get("speed_multiplier", None),
+                    nonce=kwargs.get("nonce"),
+                    gas_price=kwargs.get("gas_price"),
+                    multiplier=kwargs.get("speed_multiplier"),
                 )
             ),
         }
@@ -764,8 +769,8 @@ class ETHDaemon(BlockProcessorDaemon):
         try:
             divisibility = await self.readcontract(address, "decimals")
             value = to_wei(Decimal(value), divisibility)
-        except Exception:
-            raise Exception("Invalid arguments for transfer function")
+        except Exception as e:
+            raise Exception("Invalid arguments for transfer function") from e
         return await self.writecontract(
             address,
             "transfer",

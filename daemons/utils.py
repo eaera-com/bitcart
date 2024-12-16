@@ -11,7 +11,7 @@ from base64 import b64decode
 from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from aiohttp import web
@@ -116,10 +116,10 @@ def hide_logging_errors(enable):
 
 @dataclass
 class JsonResponse:
-    id: Optional[int] = None
-    code: Optional[int] = None
-    error: Optional[str] = None
-    result: Optional[Any] = None
+    id: int | None = None
+    code: int | None = None
+    error: str | None = None
+    result: Any | None = None
 
     def send(self):
         if self.result is not None and self.error is not None:
@@ -339,7 +339,7 @@ class MultipleProviderRPC(metaclass=ABCMeta):
             if prev_idx < 0:
                 continue
             is_stable = True
-            for _ in range(0, self.RPC_UP_CHECK_TIMES + 1):
+            for _ in range(self.RPC_UP_CHECK_TIMES + 1):
                 try:
                     await self.providers[prev_idx].send_ping_request()
                 except Exception:

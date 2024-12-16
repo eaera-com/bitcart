@@ -1,5 +1,4 @@
 import json
-from typing import Optional, Union
 
 import pyotp
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
@@ -22,8 +21,8 @@ TFA_REDIS_KEY = "users_tfa"
 async def get_tokens(
     user: models.User = Security(utils.authorization.auth_dependency, scopes=["token_management"]),
     pagination: pagination.Pagination = Depends(),
-    app_id: Optional[str] = None,
-    redirect_url: Optional[str] = None,
+    app_id: str | None = None,
+    redirect_url: str | None = None,
     permissions: list[str] = Query(None),
 ):
     return await utils.database.paginate_object(
@@ -42,8 +41,8 @@ async def get_current_token(
 async def get_token_count(
     user: models.User = Security(utils.authorization.auth_dependency, scopes=["token_management"]),
     pagination: pagination.Pagination = Depends(),
-    app_id: Optional[str] = None,
-    redirect_url: Optional[str] = None,
+    app_id: str | None = None,
+    redirect_url: str | None = None,
     permissions: list[str] = Query(None),
 ):
     return await utils.database.paginate_object(
@@ -108,7 +107,7 @@ async def validate_credentials(user, token_data):
 async def create_oauth2_token(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
-    auth_data: Union[None, tuple[Optional[models.User], str]] = Security(
+    auth_data: tuple[models.User | None, str] | None = Security(
         utils.authorization.AuthDependency(token_required=False, return_token=True)
     ),
 ):  # pragma: no cover
@@ -117,17 +116,19 @@ async def create_oauth2_token(
             email=form_data.username, password=form_data.password, permissions=form_data.scopes
         )
     except ValidationError as e:
-        raise HTTPException(422, e.errors())
+        raise HTTPException(422, e.errors()) from None
     return await create_token(token_data, auth_data)
 
 
 @router.post("")
 async def create_token(
-    token_data: Optional[schemes.HTTPCreateLoginToken] = schemes.HTTPCreateLoginToken(),
-    auth_data: Union[None, tuple[Optional[models.User], str]] = Security(
+    token_data: schemes.HTTPCreateLoginToken | None = None,
+    auth_data: tuple[models.User | None, str] | None = Security(
         utils.authorization.AuthDependency(token_required=False, return_token=True)
     ),
 ):
+    if token_data is None:  # pragma: no cover
+        token_data = schemes.HTTPCreateLoginToken()
     user, token = None, None
     if auth_data:
         user, token = auth_data
@@ -218,7 +219,7 @@ async def create_token_fido2_begin(auth_data: schemes.FIDO2Auth):  # pragma: no 
     user = await utils.database.get_object(models.User, token_data.user_id, raise_exception=False)
     if not user:
         raise HTTPException(422, "Invalid token")
-    existing_credentials = list(map(lambda x: AttestedCredentialData(bytes.fromhex(x["device_data"])), user.fido2_devices))
+    existing_credentials = [AttestedCredentialData(bytes.fromhex(x["device_data"])) for x in user.fido2_devices]
     options, state = Fido2Server(PublicKeyCredentialRpEntity(name="Bitcart", id=auth_data.auth_host)).authenticate_begin(
         existing_credentials, user_verification="discouraged"
     )
@@ -241,7 +242,7 @@ async def create_token_fido2_complete(request: Request):  # pragma: no cover
     user = await utils.database.get_object(models.User, token_data.user_id, raise_exception=False)
     if not user:
         raise HTTPException(422, "Invalid token")
-    existing_credentials = list(map(lambda x: AttestedCredentialData(bytes.fromhex(x["device_data"])), user.fido2_devices))
+    existing_credentials = [AttestedCredentialData(bytes.fromhex(x["device_data"])) for x in user.fido2_devices]
     async with utils.redis.wait_for_redis():
         state = await settings.settings.redis_pool.get(f"{FIDO2_LOGIN_KEY}:{user.id}")
         state = json.loads(state) if state else None
@@ -252,7 +253,7 @@ async def create_token_fido2_complete(request: Request):  # pragma: no cover
             data,
         )
     except Exception as e:
-        raise HTTPException(422, str(e))
+        raise HTTPException(422, str(e)) from None
     async with utils.redis.wait_for_redis():
         await settings.settings.redis_pool.delete(f"{FIDO2_LOGIN_KEY}:{user.id}")
         await settings.settings.redis_pool.delete(f"{TFA_REDIS_KEY}:{data['token']}")
